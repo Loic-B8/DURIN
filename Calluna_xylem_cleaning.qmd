@@ -1,0 +1,378 @@
+---
+title: "calluna_xylem_cleaning"
+format: html
+editor: visual
+---
+
+# Calluna xylem cleaning
+
+## Setup
+
+```{r}
+#| label: libraries
+#| message: false
+#| warning: false
+
+library(readxl) # Pour lire Excel
+library(writexl)  # Pour écrire Excel
+library(dplyr)
+library(openxlsx)
+library(ggplot2)
+library(tidyr)
+library(lme4)
+library(lmerTest)
+library(glmmTMB)
+library(ggeffects)
+library(emmeans)
+```
+
+## Import data for 2025
+
+```{r}
+#| label: import 2025
+
+# Import all the files containing the results for xylem area
+files_2025 <- list.files("Data/results_xylem_area_2025_Eirik", 
+                    full.names = TRUE)
+
+# Merging all file into one database
+combined_results_2025 <- readr::read_delim(file = files_2025,id = "file")
+# Naming xylem_id column
+names(combined_results_2025)[2] <- "xylem_id"
+
+# Extract information from the filename 
+combined_results_2025_clean <- combined_results_2025 %>%
+  mutate(
+    source_file = tools::file_path_sans_ext(basename(file)),
+    dir =dirname(file)  # directory name for the year
+  ) %>%
+  separate_wider_delim(
+    source_file,
+    delim = "-",
+    names = c(
+      "age_class",
+      "nin_rep",
+      "direction",
+      "SUBSET",
+      "subset"
+    ),
+    cols_remove = FALSE
+  ) %>%
+  mutate(
+    nin_type = stringr::str_extract(nin_rep, "^[A-Za-z]+"),
+    replicate = stringr::str_extract(nin_rep, "[0-9]+$")
+  ) %>%
+  mutate(
+    plant = paste(age_class, nin_rep, sep = "-"),
+    treatment = paste(age_class, nin_type, sep = "-"),
+    plant_direction = paste(age_class, nin_rep, direction, sep = "-"),
+    subset_id = paste(age_class, nin_rep, direction, subset, sep = "-")
+  ) %>%
+  mutate(
+    year = stringr::str_extract(dir, "\\d{4}"),
+    observer = as.character("ES"),
+    age_class = factor(
+      age_class, 
+      levels = c("PIO", "BUI", "MAT")
+      ),
+    nin_type = factor(
+      nin_type,
+      levels = c("BH", "FH", "TH"))
+  ) %>%
+  select(
+    year,
+    source_file,
+    plant,
+    age_class,
+    nin_type,
+    replicate,
+    treatment,
+    plant_direction,
+    subset,
+    subset_id,
+    everything(),
+    -file,
+    -replicate,
+    -direction,
+    -SUBSET,
+    -nin_rep
+  )
+
+# Make Year Categorical
+combined_results_2025$year <- as.character("2025")
+
+```
+
+## Import results for 2024
+
+```{r}
+#| label: import 2024 results for xylem area analysis
+
+# Import all the files containing the results for xylem area
+files_2024 <- list.files("Data/results_xylem_area_2024_Loic", 
+                    full.names = TRUE)
+
+# Merging all file into one database
+combined_results_2024 <- readr::read_delim(file = files_2024,id = "file")
+# Naming xylem_id column
+names(combined_results_2024)[2] <- "xylem_id"
+
+# Extract information from the filename 
+combined_results_2024_clean <- combined_results_2024 %>%
+  mutate(
+    source_file = tools::file_path_sans_ext(basename(file)),
+    dir =dirname(file)  # directory name for the year
+  ) %>%
+  separate_wider_delim(
+    source_file,
+    delim = "-",
+    names = c(
+      "age_class",
+      "nin_rep",
+      "direction",
+      "RESULTS",
+      "SUBSET",
+      "subset"
+    ),
+    cols_remove = FALSE
+  ) %>%
+  mutate(
+    nin_type = stringr::str_extract(nin_rep, "^[A-Za-z]+"),
+    replicate = stringr::str_extract(nin_rep, "[0-9]+$")
+  ) %>%
+  mutate(
+    plant = paste(age_class, nin_rep, sep = "-"),
+    treatment = paste(age_class, nin_type, sep = "-"),
+    plant_direction = paste(age_class, nin_rep, direction, sep = "-"),
+    subset_id = paste(age_class, nin_rep, direction, subset, sep = "-")
+  ) %>%
+  mutate(
+    year = stringr::str_extract(dir, "\\d{4}"),
+    observer = as.character("LB"),
+    age_class = factor(
+      age_class, 
+      levels = c("PIO", "BUI", "MAT")
+      ),
+    nin_type = factor(
+      nin_type,
+      levels = c("BH", "FH", "TH"))
+  ) %>%
+  select(
+    year,
+    source_file,
+    plant,
+    age_class,
+    nin_type,
+    replicate,
+    treatment,
+    plant_direction,
+    subset,
+    subset_id,
+    everything(),
+    -file,
+    -replicate,
+    -direction,
+    -RESULTS,
+    -SUBSET,
+    -nin_rep
+  )
+
+# Make year categorical
+combined_results_2024_clean$year <- as.character("2024")
+
+write.csv(combined_results_2024_clean, "Output/results_2024.csv")
+```
+
+## Subsample area 2024
+Import results for subsamples area
+
+```{r}
+#| label: Subsample area
+
+# Import all files containing results for subsample area
+files_subsample_area_2024 <- list.files("Data/subsample_area_2024", 
+                    full.names = TRUE)
+
+# Merging all file into one database
+subsample_area_2024 <- readr::read_delim(file = files_subsample_area_2024,id = "file")
+
+names(subsample_area_2024)[2] <- "subset"
+
+# Create subset_id identical to the column in the dataset of the results
+subsample_area_2024_area <- subsample_area_2024 %>%
+  mutate(
+    source_file = tools::file_path_sans_ext(basename(file))
+  ) %>%
+  mutate(
+    subset_id = paste(source_file, subset, sep = "-"),
+    subset_area = Area
+  ) %>%
+  select(
+    source_file,
+    subset_id,
+    subset,
+    subset_area,
+    -file
+  )
+
+# Functions to correct the order for the subset area
+swap_subset_area <- function(data, id, subset1, subset2, subset3) {
+
+  area_1 <- data$subset_area[
+    data$source_file == id &
+      data$subset == subset1
+  ]
+  
+  area_2 <- data$subset_area[
+    data$source_file == id &
+      data$subset == subset2
+  ]
+  
+  area_3 <- data$subset_area[
+    data$source_file == id &
+      data$subset == subset3
+  ]
+
+  data$subset_area[
+    data$source_file == id &
+      data$subset == 1
+  ] <- area_1
+
+  data$subset_area[
+    data$source_file == id &
+      data$subset == 2
+  ] <- area_2
+  
+  data$subset_area[
+    data$source_file == id &
+      data$subset == 3
+  ] <- area_3
+
+  data
+} # Place subset in the order established
+swap_subset_area_2 <- function(data, id, subset1, subset2) {
+
+  temp <- data$subset_area[
+    data$source_file == id &
+      data$subset == subset1
+  ]
+
+  data$subset_area[
+    data$source_file == id &
+      data$subset == subset1
+  ] <- data$subset_area[
+    data$source_file == id &
+      data$subset == subset2
+  ]
+
+  data$subset_area[
+    data$source_file == id &
+      data$subset == subset2
+  ] <- temp
+
+  data
+} # Swap to subset area together 
+
+# Function application to obtain the correct order
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-BH1-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-BH1-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-BH4-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-BH5-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-BH5-S", 1, 3, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-BH7-N", 3, 1, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-BH7-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH1-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH1-S", 2, 3, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH2-N", 3, 1, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH2-S", 1, 3, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH3-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH4-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH4-S", 2, 3, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH5-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-FH5-S", 2, 3, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-TH3-N", 3, 1, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-TH3-S", 2, 3, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-TH5-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-TH5-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-TH6-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-TH6-S", 1, 3, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-TH7-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "BUI-TH7-S", 1, 3, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-BH1-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-BH2-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-BH2-S", 1, 3, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-BH3-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-FH1-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-FH2-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-FH3-N", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-FH5-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-TH1-N", 3, 1, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-TH2-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-TH3-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-TH5-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "MAT-TH5-S", 3, 2, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-BH1-N", 3, 1, 2)
+subsample_area_2024_area <- swap_subset_area_2(subsample_area_2024_area, "PIO-BH2-N", 1, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-BH2-S", 1, 3, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-BH3-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-BH4-S", 2, 3, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-FH1-N", 3, 1, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-FH1-S", 1, 3, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-FH3-N", 3, 1, 2) 
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-FH3-S", 2, 3, 1)
+subsample_area_2024_area <- swap_subset_area_2(subsample_area_2024_area, "PIO-TH1-N", 1, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH1-S", 2, 3, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH2-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH2-S", 1, 3, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH3-N", 3, 1, 2)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH3-S", 2, 3, 1)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH4-N", 2, 1, 3)
+subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH4-S", 2, 3, 1)
+
+# Joining subsample area to xylem area
+xylem_data_2024 <- combined_results_2024_clean %>%
+  left_join(
+    subsample_area_2024_area  %>%
+      select(subset_id, subset_area),
+    by = c("subset_id")
+  )
+
+write.csv(subsample_area_2024_area, "Output/subset_area_2024.csv")
+```
+
+## Damage 2024
+
+```{r}
+#| label: Damage
+
+damage_2024 <- read_excel("Data/damage_report_2024.xlsx")
+
+damage_2024 <- damage_2024 %>%
+  mutate(across(starts_with("damage_sub"), as.numeric))
+
+damage_2024_long <- damage_2024 %>%
+  select(image_id, whole_plant_damage, cardinal_damage, folds, warped, late_season_missing,
+         damage_sub1, damage_sub2, damage_sub3) %>%
+  pivot_longer(
+    cols = starts_with("damage_sub"),
+    names_to = "subset",
+    values_to = "subset_damage"
+  ) %>%
+  mutate(
+    subset = sub("damage_sub", "", subset),
+    subset = as.integer(subset),
+    plant_direction = image_id
+  )
+
+xylem_data_2024 <- xylem_data_2024 %>%
+  mutate(subset = as.integer(subset))
+
+xylem_data_2024 <- xylem_data_2024 %>%
+  left_join(
+    damage_2024_long,
+    by = c("plant_direction", "subset")
+  )
+
+write.csv(df, "Output/list_images_cut_and_merge.csv")
+```
+
