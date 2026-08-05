@@ -24,6 +24,8 @@ library(lmerTest)
 library(glmmTMB)
 library(ggeffects)
 library(emmeans)
+library(patchwork)
+library(plotrix)
 ```
 
 ## Import data for 2025
@@ -118,7 +120,7 @@ combined_results_2024 <- readr::read_delim(file = files_2024,id = "file")
 names(combined_results_2024)[2] <- "xylem_id"
 
 # Extract information from the filename 
-combined_results_2024_clean <- combined_results_2024 %>%
+xylem_area_2024 <- combined_results_2024 %>%
   mutate(
     source_file = tools::file_path_sans_ext(basename(file)),
     dir =dirname(file)  # directory name for the year
@@ -178,13 +180,36 @@ combined_results_2024_clean <- combined_results_2024 %>%
   )
 
 # Make year categorical
-combined_results_2024_clean$year <- as.character("2024")
+xylem_area_2024$year <- as.character("2024")
 
-write.csv(combined_results_2024_clean, "Output/results_2024.csv")
+write.csv(xylem_area_2024, "Output/results_2024.csv")
+```
+
+## Filter cut xylem
+Because during the image processing all xylems were kept, a filtering of the xylems not fully inside the subset is necessary.
+
+```{r}
+#| label: Filtering of cut xylem
+
+# Import  the file indicating the cut xylems
+cut_partial_xylems <- read_excel("Data/cut_and_partial_xylems.xlsx")
+
+# Adding cut and partial columns to the data
+xylem_area_2024 <- xylem_area_2024 %>%
+  left_join(
+    cut_partial_xylems  %>%
+      select(subset_id, xylem_id, cut_xylem, partial_xylem),
+    by = c("subset_id", "xylem_id")
+  )
+
+# Filtering only uncut xylems
+xylem_area_2024_clean <- xylem_area_2024 %>%
+  filter(is.na(cut_xylem))
+
 ```
 
 ## Subsample area 2024
-Import results for subsamples area
+Import results for subset area
 
 ```{r}
 #| label: Subsample area
@@ -330,7 +355,7 @@ subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH4-
 subsample_area_2024_area <- swap_subset_area(subsample_area_2024_area, "PIO-TH4-S", 2, 3, 1)
 
 # Joining subsample area to xylem area
-xylem_data_2024 <- combined_results_2024_clean %>%
+xylem_data_2024 <- xylem_area_2024_clean %>%
   left_join(
     subsample_area_2024_area  %>%
       select(subset_id, subset_area),
@@ -373,6 +398,157 @@ xylem_data_2024 <- xylem_data_2024 %>%
     by = c("plant_direction", "subset")
   )
 
-write.csv(df, "Output/list_images_cut_and_merge.csv")
+```
+## Distribution of damage
+
+```{r}
+#| label: distribution of damage
+
+damage_distribution4 <- xylem_data_2024 %>%
+  filter(subset_damage == 4) %>%
+  count(treatment)
+
+damage_distribution5 <- xylem_data_2024 %>%
+  filter(subset_damage == 5) %>%
+  count(treatment)
+
+sum_4 <- sum(damage_distribution4$n)
+sum_5 <- sum(damage_distribution5$n)
+```
+
+## Evenness
+
+```{r}
+#| label: distribution of damage
+#| message: false
+#| warning: false
+
+#this chunk creates a dataframe that count the amount of xylem per treatement before and after filtering by circularity
+
+xylem_count_evenness <- xylem_data_2024 %>%
+  count(treatment)
+
+xylem_count_evenness_filtered <- xylem_data_2024 %>%
+  mutate(circ = (4*3.14)*(Area/(Perim.*Perim.))) %>%
+  filter(circ >= 0.65) %>%
+  count(treatment)
+
+xylem_count_combined <- xylem_count_evenness %>%
+  mutate(count_filter = xylem_count_evenness_filtered$n) %>%
+  mutate(percentage_remaining = count_filter/n)
+
+names(xylem_count_combined) <- c("Treatment", 
+                                 "Number of xylems", 
+                                 "Number of xylems after filtering", 
+                                 "Percentage xylem remaining")
+
+```
+
+## Circularity and damage
+
+```{r}
+#| label: circularity in relation to damage
+
+#this chunk provides a comparison of datapoints before and after filtering by circularity >= 0.70.
+
+data_circ <- xylem_data_2024 |>
+  mutate(circ = (4*3.14)*(Area/(Perim.*Perim.))) |>
+  group_by(treatment) |>
+  mutate(means_treatment = mean(Area))
+
+data_circ_filter <- data_circ |>
+  filter(circ >= 0.70)
+
+#creating new filtered datasets
+xylem_damage_5 <- data_circ |>
+  filter(subset_damage == 5)
+
+xylem_damage_4 <- data_circ |>
+  filter(subset_damage == 4)
+
+xylem_damage_5_filtered <- data_circ_filter |>
+  filter(subset_damage == 5)
+
+xylem_damage_4_filtered <- data_circ_filter |>
+  filter(subset_damage == 4)
+
+#create a custom palette to use
+palette_damage <- c("orange", "red")
+
+
+plot_damage <- ggplot() + 
+  geom_jitter(data = data_circ, 
+              aes(x = treatment, y = Area), 
+              color = "grey") + 
+  geom_jitter(data = xylem_damage_4, 
+              aes(x = treatment, y = Area, color = as.character(as.numeric(subset_damage)))) + 
+  geom_jitter(data = xylem_damage_5, 
+              aes(x = treatment, y = Area, color = as.character(as.numeric(subset_damage)))) + 
+  geom_point(data = data_circ, 
+             aes(x = treatment, y = means_treatment), 
+             color = "blue") + 
+  labs(title = "Unfiltered") + 
+  ylab(label = "Xylem vessel area in µm") + 
+  xlab(label = "NiN x Age class") + 
+  theme(legend.position = "none") + 
+  scale_color_manual(values = palette_damage) + 
+  scale_y_continuous(breaks = seq(100,2000, by = 100))
+
+plot_damage_filtered <- ggplot() + 
+  geom_jitter(data = data_circ, 
+              aes(x = treatment, y = Area), color = "grey") + 
+  geom_jitter(data = xylem_damage_4_filtered, 
+              aes(x = treatment, y = Area, color = as.character(as.numeric(subset_damage)))) + 
+  geom_jitter(data = xylem_damage_5_filtered, 
+              aes(x = treatment, y = Area, color = as.character(as.numeric(subset_damage)))) + 
+  geom_point(data = data_circ, 
+             aes(x = treatment, y = means_treatment), color = "blue") + 
+  labs(title = "Circularity >= 0.7") + 
+  ylab(label = "Xylem vessel area in µm") + 
+  xlab(label = "NiN x Age class") + 
+  scale_color_manual(values = palette_damage) + 
+  guides(color = guide_legend(title = "Subset damage index")) + 
+  scale_y_continuous(breaks = seq(100,2000, by = 100))
+
+plot_damage + plot_damage_filtered
+```
+```{r}
+#| label: damage vs circularity
+
+damage_data <- xylem_data_2024 |>
+  mutate(circ = (4*3.14)*(Area/(Perim.*Perim.))) |>
+  filter(subset_damage < 4)
+
+circularity_plot <- ggplot(data = data_circ_filter) + 
+  geom_point(aes(x = circ, y= Area), alpha = 0.4)
+
+damage_plot <- ggplot(data = damage_data) + 
+  geom_point(aes(x = circ, y= Area, color = subset_damage), alpha = 0.4)
+
+circularity_plot + damage_plot
+
+```
+```{r}
+#| label: potential problematic xylem
+
+potential_problematic_xylem <- xylem_data_2024 |>
+  mutate(circ = (4*3.14)*(Area/(Perim.*Perim.))) |>
+  group_by(source_file) |>
+  mutate(subset_means = mean(Area)) |>
+  mutate(problematic = case_when(
+    circ <= 0.65 & Area >= (subset_means + (subset_means * 0.2)) ~ 1, #this basically checks for uncircular xylem that also are larger than the means, as stacked xylem should have a tendency to be larger than average.
+    .default = 0
+  )) |>
+  filter(problematic == 0)
+
+before_plot <- ggplot(data = data_circ) + 
+  geom_point(aes(x = circ, y = Area), alpha = 0.4) + 
+  facet_grid(cols = vars(age_class), rows = vars(nin_type))
+
+after_plot <- ggplot(data = potential_problematic_xylem) + 
+  geom_point(aes(x = circ, y = Area), alpha = 0.4) + 
+  facet_grid(cols = vars(age_class), rows = vars(nin_type))
+
+before_plot + after_plot
 ```
 
