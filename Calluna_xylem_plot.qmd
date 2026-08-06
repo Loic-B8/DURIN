@@ -1,0 +1,238 @@
+---
+title: "calluna_xylem_plot"
+format: html
+editor: visual
+---
+
+# Calluna xylem plot
+
+## Libraries
+
+```{r}
+#| label: libraries
+#| echo: false
+
+library(ggplot2)
+library(ggeffects)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+library(multcomp)
+library(patchwork)
+```
+
+## Merging dataset from 2025 and 2024
+
+### Import 2025 dataset 
+
+```{r}
+#| label: import 2025
+
+# import dataset
+data_2025 <- read.csv("clean_dataset/DURIN_clean_LygraFire_field_trait_2025.csv")
+# Adding year and observer as well as oredering age_class and nin_type
+data_2025 <- data_2025 %>%
+  mutate(
+    year = as.character("2025"),
+    observer = as.character("ES"),
+    age_class = factor(
+      age_class, 
+      levels = c("PIO", "BUI", "MAT")
+    ),
+    nin_type = factor(
+      nin_type,
+      levels = c("BH", "FH", "TH"))
+  ) %>% 
+  select(
+    - X.1,
+  )
+
+```
+
+### Import 2024 dataset
+
+```{r}
+#| label: import 2024
+
+# import dataset
+data_2024 <- read.csv("clean_dataset/DURIN_clean_LygraFire_field_trait_2024.csv")
+# Oredering age_class and nin_type
+data_2024 <- data_2024 %>%
+  mutate(
+    year = as.character("2024"),
+    observer = as.character("LB"),
+    age_class = factor(
+      age_class, 
+      levels = c("PIO", "BUI", "MAT")
+    ),
+    nin_type = factor(
+      nin_type,
+      levels = c("BH", "FH", "TH"))
+  )
+
+```
+
+### Merging of both dataset
+
+```{r}
+#| label: merging of 2025 dataset with 2024 dataset
+
+data <- bind_rows(
+  data_2024,
+  data_2025
+)
+
+```
+
+```{r}
+#| label: prep
+
+data <- data |>
+  group_by(treatment) |>
+  mutate(means_treatment = mean(Area),
+         sd_treatment = sd(Area)
+         ) |> #mean areaand sd per NiN-age combination
+  ungroup() |>
+  group_by(plant) |>
+  mutate(plant_area = mean(Area)) #mean area per plant
+
+data <- data %>%
+  arrange(desc(means_treatment)) #sort the rows in descendind order
+
+```
+
+## Plotting
+
+```{r}
+#| label: plot
+
+ggplot(data, 
+       aes(x = age_class, 
+           y = 1, color = nin_type, 
+           size = means_treatment, 
+           label = round(means_treatment))) +
+  geom_point(shape = 21, 
+             fill = NA, 
+             stroke = 2, 
+             position = position_dodge(0.1)) + 
+  scale_size_area(max_size = 30) + 
+  geom_text(size = 4, 
+            position = position_dodge(1)) + 
+  theme_minimal() + 
+  scale_colour_viridis_d() +
+  labs(x = "Age class", 
+       color = "NiN type") + 
+  guides(size = "none") + 
+  theme(axis.text.y = element_blank(), 
+        axis.title.y = element_blank())
+
+```
+
+```{r}
+#| label: xylem area variation
+
+variation_data <- data |>
+  group_by(subset_id) |>
+  mutate(subset_means = mean(Area)) |>
+  distinct(subset_id, .keep_all = TRUE) 
+
+variation_data$subset_damage <- as.character(as.numeric(variation_data$subset_damage))
+
+
+xylem_variation_plot <- ggplot(data = variation_data, 
+                               aes(x = age_class, 
+                                   y = subset_means, 
+                                   color = factor(year))) + 
+  geom_point(position = position_jitter(0.1)) + 
+  geom_violin(fill = NA, 
+              color = "deepskyblue4") + 
+  facet_grid(rows = vars(nin_type)) + 
+  labs(x = "Age class", 
+       y = "Mean xylem vessel area per subset in µm²",
+       color = "Year") 
+
+xylem_variation_plot
+ggsave("plots/xylem_vessel_area_variation.png", xylem_variation_plot)
+
+variation_data <- variation_data |>
+  group_by(treatment) |>
+  mutate(min_max = max(subset_means)-min(subset_means))
+```
+
+## Xylem vessel area
+
+```{r}
+#| label: mixed effect model
+
+#removing double xylem as they will bias the size estimate. then fitting a model with estimates of mean xylem vessel area for each treatment combo
+
+data_model <- data |>
+  filter(double_xylem == 0) # remove double xylem from xylem vessel size estimates
+
+model <- lmer(sqrt(Area) ~ year * age_class * nin_type +  
+                circ +
+                subset_damage + 
+                (1 | plant), 
+              data = data_model)
+
+pred_mod <- ggpredict(model, terms = c("year"))
+
+pred_mod
+plot(pred_mod)
+```
+
+```{r}
+summary(model)
+```
+
+```{r}
+VarCorr(model)
+```
+
+```{r}
+res <- residuals(model)
+plot(res)
+```
+
+```{r}
+qqnorm(res)
+qqline(res)
+```
+
+```{r}
+#| label: mixed effect model prediction and raw values
+
+#since i have used a sqrt transform on the dataset, the std.error gets kind of unreliable. are instead using confidence intervals
+
+mixed_vs_raw <- ggplot() +  
+  geom_point(data = data, 
+             aes(x = age_class, y = means_treatment, color = nin_type), 
+             shape = 1, 
+             size = 3, 
+             position = position_dodge(0.2)) + 
+  geom_point(data = pred_mod, 
+             aes(x = x, y = predicted, color = group), 
+             shape = 2, 
+             size = 4, 
+             position = position_dodge(0.2)) + 
+  geom_errorbar(data = pred_mod, 
+                aes(x = x, 
+                    ymin = predicted-conf.low, 
+                    ymax = predicted+conf.high, 
+                    color = group), 
+                width = 0.2, position = position_dodge(0.2)) + 
+  labs(x = "Age class", 
+       y = "Mean xylem vessel area in µm²") + 
+  guides(color = guide_legend("NiN Type")) +
+  scale_color_manual(values = c("darkslategrey", "deepskyblue4", "lightskyblue")) 
+
+mixed_vs_raw
+
+ggsave("plots/Mixed_effects_vs_raw_averages.png", mixed_vs_raw)
+
+```
+
+```{r}
+anova(model, type = 3) #using type 3 as the drop1 output deemed the age_class:nin_type interaction significant
+```
