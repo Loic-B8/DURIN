@@ -14,17 +14,42 @@ editor: visual
 
 library(ggplot2)
 library(ggeffects)
-library(tidyverse)
+library(tidyverse) # ggplot and tidy functions
 library(lme4)
 library(lmerTest)
-library(emmeans)
+library(emmeans) # estimated marginal means and pairwise comparisons
 library(multcomp)
 library(patchwork)
+library(performance)
+library(see)
+library(cowplot) #  publication-ready plotss
+library(ggdist) # density slabs
+library(EnvStats) # stat_n_text() for inserting sample sizes
+library(ggtext) # formatting text elements with markdown syntax
+library(afex) # anova functions
+library(car) # anova functions
+library(effectsize) # effect sizes
+library(ggpubr) # significance brackets
+library(weights) # rounding values
+library(report) # for citing packages
+library(janitor) #for cleaning variable names
+library(ggpp) # for position_dodge2nudge
+
+```
+
+```{r}
+#| label: Color palette
+
+# Define color palette
+nova_palette <- c("#78AAA9", "#FFDB6E")
+nova_palette1 <- c("#0000FF", "#00BFFF", "#87CEEB")
+nova_palette2 <- c("#7FFF00", "#00FF00", "#008B00")
+
 ```
 
 ## Merging dataset from 2025 and 2024
 
-### Import 2025 dataset 
+### Import 2025 dataset
 
 ```{r}
 #| label: import 2025
@@ -44,8 +69,8 @@ data_2025 <- data_2025 %>%
       nin_type,
       levels = c("BH", "FH", "TH"))
   ) %>% 
-  select(
-    - X.1,
+  dplyr::select(
+    - X.1
   )
 
 ```
@@ -86,67 +111,288 @@ data <- bind_rows(
 ```
 
 ```{r}
+#| label: functions
+
+# This function generates a summary table with various statistics for the specified grouping variables and dependent variable.
+make_summary <- function(data, dv, grouping1, grouping2, grouping3){
+  # Use dplyr to group the data by the specified grouping variables and calculate summary statistics
+  # dv for dependant variable
+  data %>%
+    group_by({{grouping1}}, {{grouping2}}, {{grouping3}}) %>% # Group by the specified variables
+    dplyr::summarise(
+      mean = round(mean({{dv}}), 2), # Calculate and round the mean of the dependent variable
+      min = round(min({{dv}}), 2),   # Calculate and round the minimum
+      max = round(max({{dv}}), 2),   # Calculate and round the maximum
+      n = n(),                       # Count the number of observations
+      std_dev = round(sd({{dv}}), 2), # Calculate and round the standard deviation
+      se = round(sd({{dv}}) / sqrt(n()), 2), # Calculate and round the standard error
+      y25 = round(quantile({{dv}}, 0.25)),  # Calculate and round the 25th percentile
+      y50 = round(median({{dv}})),         # Calculate and round the median (50th percentile)
+      y75 = round(quantile({{dv}}, 0.75)),  # Calculate and round the 75th percentile
+      loci = round(mean({{dv}}) - 1.96 * se, 1), # Calculate and round the lower confidence interval
+      upci = round(mean({{dv}}) + 1.96 * se, 1)  # Calculate and round the upper confidence interval
+    )
+}
+
+# This function takes summary data and a tidy emmeans object and adds emmeans-related columns to the summary data
+merge_emmeans_summary <- function(summary_data, emmeans_tidy) {
+  # Add emmeans-related columns to the summary_data
+  
+  # Assign the 'emmean' values from the emmeans_tidy to a new column 'emmean' in summary_data
+  summary_data$emmean <- emmeans_tidy$response
+  
+  # Assign the 'SE' values from emmeans_tidy to a new column 'emmean_se' in summary_data
+  summary_data$emmean_se <- emmeans_tidy$SE
+  
+  # Assign the 'lower.CL' values from emmeans_tidy to a new column 'emmean_loci' in summary_data
+  summary_data$emmean_loci <- emmeans_tidy$lower.CL
+  
+  # Assign the 'upper.CL' values from emmeans_tidy to a new column 'emmean_upci' in summary_data
+  summary_data$emmean_upci <- emmeans_tidy$upper.CL
+  
+  # Return the summary_data with the added emmeans-related columns
+  return(summary_data)
+}
+
+merge_emmeans_summary1 <- function(summary_data, emmeans_tidy) {
+  # Add emmeans-related columns to the summary_data
+  
+  # Assign the 'emmean' values from the emmeans_tidy to a new column 'emmean' in summary_data
+  summary_data$emmean <- emmeans_tidy$emmean
+  
+  # Assign the 'SE' values from emmeans_tidy to a new column 'emmean_se' in summary_data
+  summary_data$emmean_se <- emmeans_tidy$SE
+  
+  # Assign the 'lower.CL' values from emmeans_tidy to a new column 'emmean_loci' in summary_data
+  summary_data$emmean_loci <- emmeans_tidy$lower.CL
+  
+  # Assign the 'upper.CL' values from emmeans_tidy to a new column 'emmean_upci' in summary_data
+  summary_data$emmean_upci <- emmeans_tidy$upper.CL
+  
+  # Return the summary_data with the added emmeans-related columns
+  return(summary_data)
+}
+
+# This function takes a dataframe, a column name for t-values, a column name for degrees of freedom, and a prefix for result column names.
+calculate_and_merge_effect_sizes <- function(emmeans, model) {
+  
+  contrasts <- data.frame(emmeans$contrasts)
+  
+  emmean_d <- data.frame(emmeans::eff_size(
+    emmeans,
+    method = "pairwise",
+    sigma = sigma(model),
+    edf = df.residual(model)))
+  
+  combined_dataframe <- data.frame(contrasts, emmean_d)
+  
+  # Rename some columns for clarity
+  combined_dataframe <- combined_dataframe %>%
+    rename(d = effect.size,
+           d_ci_low = lower.CL,
+           d_ci_high = upper.CL,
+           d_se = SE.1,
+           df_error = df,
+           p = p.value)
+  
+  # Return the combined dataframe with effect size results
+  return(combined_dataframe)
+}
+
+# This function generates a text summary based on user-specified options using a tidy t-test dataframe.
+report_tidy_t <- function(tidy_frame, 
+                          italicize = TRUE, 
+                          ci = TRUE, 
+                          ci.lab = TRUE, 
+                          test.stat = FALSE, 
+                          point = TRUE, 
+                          pval = TRUE, 
+                          pval_comma = TRUE
+){
+  # Initialize an empty string to store the result text
+  text <- ""
+  
+  # Conditionally add effect size (d) to the result text
+  if (point == TRUE) {
+    text <- paste0(text,
+                   ifelse(italicize == TRUE, "*d* = ", "d = "), # Italicized or not
+                   round(tidy_frame$d, 2) # Rounded d value
+    )
+  }
+  
+  # Conditionally add 95% CI to the result text
+  if (ci == TRUE) {
+    text <- paste0(text,
+                   ifelse(ci.lab == TRUE,
+                          paste0(", 95% CI [", 
+                                 round(tidy_frame$d_ci_low, 2), ", ", 
+                                 round(tidy_frame$d_ci_high, 2), "]"), # Label and rounded CI values
+                          paste0(" [", 
+                                 round(tidy_frame$d_ci_low, 2), ", ", 
+                                 round(tidy_frame$d_ci_high, 2), "]") # Only rounded CI values
+                   )
+    )
+  }
+  
+  # Conditionally add t-statistic and degrees of freedom to the result text
+  if (test.stat == TRUE) {
+    text <- paste0(text,
+                   ", *t*(", round(tidy_frame$df_error, 2), ") = ", round(tidy_frame$t, 2) # t-statistic and df
+    )
+  }
+  
+  # Conditionally add p-value to the result text
+  if (pval == TRUE) {
+    text <- paste0(text,
+                   ifelse(pval_comma == TRUE,
+                          ifelse(italicize == TRUE, ", *p* ", ", p "), 
+                          ifelse(italicize == TRUE, "*p* ", "p ")  # Italicized or not
+                   ),
+                   ifelse(tidy_frame$p < .001, "< .001", # Formatting based on p-value
+                          ifelse(tidy_frame$p > .01, 
+                                 paste("=", tidy_frame$p %>% round(2)), 
+                                 paste("=", tidy_frame$p %>% round(3))
+                          )
+                   )
+    )
+  }
+  
+  # Return the generated text summary
+  return(text)
+}
+```
+
+```{r}
 #| label: prep
 
 data <- data |>
-  group_by(treatment) |>
+  group_by(year, treatment) |>
   mutate(means_treatment = mean(Area),
-         sd_treatment = sd(Area)
-         ) |> #mean areaand sd per NiN-age combination
+         sd_treatment = sd(Area),
+         n_treatment = n(),
+         se_treatment = sd_treatment / sqrt(n_treatment)
+         ) |> #mean area and error per NiN-age combination
   ungroup() |>
-  group_by(plant) |>
-  mutate(plant_area = mean(Area)) #mean area per plant
-
-data <- data %>%
-  arrange(desc(means_treatment)) #sort the rows in descendind order
+  group_by(year, plant) |>
+  mutate(year, means_plant = mean(Area),
+         sd_plant = sd(Area),
+         n_plant = n(),
+         se_plant = sd_plant / sqrt(n_plant)
+         ) %>% #mean area and error per plant
+  ungroup() %>%
+  group_by(year, plant_direction) %>%
+  mutate(means_plant_direction = mean(Area),
+         sd_plant_direction = sd(Area),
+         n_plant_direction = n(),
+         se_plant_direction = sd_plant_direction / sqrt(n_plant_direction)
+         ) %>% 
+  ungroup() %>% 
+  group_by(year, subset_id) |>
+  mutate(means_subset = mean(Area),
+         sd_subset = sd(Area, na.rm = TRUE),
+         n_subset = n(),
+         se_subset = sd_subset / sqrt(n_subset),) %>%
+  ungroup()
 
 ```
 
 ## Plotting
 
 ```{r}
-#| label: plot
+#| label: xylem area variation by plant
 
-ggplot(data, 
-       aes(x = age_class, 
-           y = 1, color = nin_type, 
-           size = means_treatment, 
-           label = round(means_treatment))) +
-  geom_point(shape = 21, 
-             fill = NA, 
-             stroke = 2, 
-             position = position_dodge(0.1)) + 
-  scale_size_area(max_size = 30) + 
-  geom_text(size = 4, 
-            position = position_dodge(1)) + 
-  theme_minimal() + 
-  scale_colour_viridis_d() +
+xylem_plant_variation_plot <- ggplot(data = data, 
+                               aes(x = age_class, 
+                                   y = means_plant, 
+                                   color = year)) + 
+  geom_point(
+    aes(color = year),
+    shape = 1,
+    position = position_jitterdodge(
+      jitter.width = 0.05,
+      dodge.width = 0.5
+    )
+  ) + 
+  geom_jitter(position = position_jitterdodge(
+    jitter.width = 0.15,
+    dodge.width = 0.4
+  )) +
+  geom_boxplot(position = position_dodge(0.4),
+               alpha = 0.3,
+               outlier.shape = NA) + 
+  facet_grid(rows = vars(nin_type)) + 
   labs(x = "Age class", 
-       color = "NiN type") + 
-  guides(size = "none") + 
-  theme(axis.text.y = element_blank(), 
-        axis.title.y = element_blank())
+       y = "Mean xylem vessel area per plant in µm²",
+       color = "Year") 
+
+xylem_plant_variation_plot
+ggsave("plots/xylem_vessel_area_plant_variation.png", xylem_plant_variation_plot)
+
 
 ```
 
 ```{r}
-#| label: xylem area variation
+#| label: xylem area variation by subset
 
-variation_data <- data |>
-  group_by(subset_id) |>
-  mutate(subset_means = mean(Area)) |>
-  distinct(subset_id, .keep_all = TRUE) 
+variation_subset_data <- data |>
+  distinct(subset_id, .keep_all = TRUE) # Keep only one raw by subset
+
+variation_subset_data$subset_damage <- as.character(as.numeric(variation_subset_data$subset_damage))
+
+
+xylem_subset_variation_plot <- ggplot(data = variation_subset_data, 
+                               aes(x = age_class, 
+                                   y = means_subset, 
+                                   color = year)) + 
+  geom_jitter(position = position_jitterdodge(
+    jitter.width = 0.15,
+    dodge.width = 0.4
+  )) +
+  geom_boxplot(position = position_dodge(0.4),
+               alpha = 0.3,
+               outlier.shape = NA) + 
+  stat_summary(
+    fun.data = mean_se,
+    geom = "errorbar",
+    position = position_dodge(width = 0.8),
+    width = 0.3
+  ) +
+  facet_grid(rows = vars(nin_type)) + 
+  labs(x = "Age class", 
+       y = "Mean xylem vessel area per subset in µm²",
+       color = "Year") 
+
+xylem_subset_variation_plot
+ ggsave("plots/xylem_vessel_area_subset_variation.png", 
+        xylem_subset_variation_plot)
+
+```
+
+```{r}
+#| label: xylem area variation 
+
+variation_data <- data 
 
 variation_data$subset_damage <- as.character(as.numeric(variation_data$subset_damage))
 
 
 xylem_variation_plot <- ggplot(data = variation_data, 
                                aes(x = age_class, 
-                                   y = subset_means, 
-                                   color = factor(year))) + 
-  geom_point(position = position_jitter(0.1)) + 
-  geom_violin(fill = NA, 
-              color = "deepskyblue4") + 
+                                   y = Area, 
+                                   color = year)) + 
+  geom_jitter(position = position_jitterdodge(
+    jitter.width = 0.15,
+    dodge.width = 0.4
+  )) +
+  geom_boxplot(position = position_dodge(0.4),
+               alpha = 0.3,
+               outlier.shape = NA) + 
+  stat_summary(
+    fun.data = mean_se,
+    geom = "errorbar",
+    position = position_dodge(width = 0.8),
+    width = 0.3
+  ) +
   facet_grid(rows = vars(nin_type)) + 
   labs(x = "Age class", 
        y = "Mean xylem vessel area per subset in µm²",
@@ -154,10 +400,6 @@ xylem_variation_plot <- ggplot(data = variation_data,
 
 xylem_variation_plot
 ggsave("plots/xylem_vessel_area_variation.png", xylem_variation_plot)
-
-variation_data <- variation_data |>
-  group_by(treatment) |>
-  mutate(min_max = max(subset_means)-min(subset_means))
 ```
 
 ## Xylem vessel area
@@ -170,20 +412,43 @@ variation_data <- variation_data |>
 data_model <- data |>
   filter(double_xylem == 0) # remove double xylem from xylem vessel size estimates
 
-model <- lmer(sqrt(Area) ~ year * age_class * nin_type +  
+# Setting contrasts
+contrasts(data_model$age_class) <- contr.sum
+contrasts(data_model$nin_type) <- contr.sum
+
+model <- lmer(sqrt(Area) ~ (year + age_class + nin_type) ^3 +   
                 circ +
                 subset_damage + 
                 (1 | plant), 
               data = data_model)
 
-pred_mod <- ggpredict(model, terms = c("year"))
-
+pred_mod <- ggpredict(model, terms = c("year", "age_class", "nin_type"))
+pred_mod_df <- as.data.frame(pred_mod)
+summary(model)
 pred_mod
 plot(pred_mod)
+
 ```
 
 ```{r}
+# Apply our custom function to create summary dataframe
+xylem_mean_summary <- make_summary(data = data_model, 
+                                   dv = Area, 
+                                   grouping1 = year, 
+                                   grouping2 = age_class,
+                                   grouping3 = nin_type
+                                   )
+
+# Show summary dataframe in table
+knitr::kable(xylem_mean_summary)
+
 summary(model)
+```
+
+```{r}
+#| fig-height: 10
+
+performance::check_model(model)
 ```
 
 ```{r}
@@ -201,31 +466,70 @@ qqline(res)
 ```
 
 ```{r}
+plot(fitted(model), residuals(model))
+```
+
+```{r}
 #| label: mixed effect model prediction and raw values
 
 #since i have used a sqrt transform on the dataset, the std.error gets kind of unreliable. are instead using confidence intervals
 
+pred_mod_df <- pred_mod_df |>
+  mutate(
+    treatment = paste(group, facet, sep = "-"),
+    color_group = paste0("Predicted ", x)
+  )
+
+data_model <- data_model %>%
+  mutate(color_group = paste0("Raw ", year))
+
 mixed_vs_raw <- ggplot() +  
-  geom_point(data = data, 
-             aes(x = age_class, y = means_treatment, color = nin_type), 
-             shape = 1, 
+  geom_point(data = data_model, 
+             aes(x = treatment, 
+                 y = means_treatment, 
+                 color = color_group, 
+                 shape = "raw mean"
+                 ), 
              size = 3, 
              position = position_dodge(0.2)) + 
-  geom_point(data = pred_mod, 
-             aes(x = x, y = predicted, color = group), 
-             shape = 2, 
-             size = 4, 
+  geom_point(data = pred_mod_df, 
+             aes(x = treatment, 
+                 y = predicted, 
+                 color = color_group,
+                 shape = "model prediction"
+                 ), 
+             size = 3, 
              position = position_dodge(0.2)) + 
-  geom_errorbar(data = pred_mod, 
-                aes(x = x, 
-                    ymin = predicted-conf.low, 
-                    ymax = predicted+conf.high, 
-                    color = group), 
+  geom_errorbar(data = pred_mod_df, 
+                aes(x = treatment, 
+                    ymin = conf.low, 
+                    ymax = conf.high, 
+                    color = color_group), 
                 width = 0.2, position = position_dodge(0.2)) + 
-  labs(x = "Age class", 
-       y = "Mean xylem vessel area in µm²") + 
-  guides(color = guide_legend("NiN Type")) +
-  scale_color_manual(values = c("darkslategrey", "deepskyblue4", "lightskyblue")) 
+  geom_errorbar(data = data_model, 
+                aes(x = treatment, 
+                    ymin = means_treatment - 1.96*se_treatment, 
+                    ymax = means_treatment + 1.96*se_treatment, 
+                    color = color_group), 
+                width = 0.2, position = position_dodge(0.2)) +
+  scale_color_manual(
+    values = c(
+      "Raw 2024"       = "darkblue",
+      "Predicted 2024" = "lightblue",
+      "Raw 2025"       = "darkred",
+      "Predicted 2025" = "lightcoral"
+    )
+  ) +
+  labs(x = "Treatment", 
+       y = "Mean xylem vessel area in µm²",
+       color = "Year",
+       shape = "Value") + 
+  scale_shape_manual(
+    values = c(
+      "raw mean" = 1,
+      "model prediction" = 2
+    )
+  )
 
 mixed_vs_raw
 
@@ -234,5 +538,1339 @@ ggsave("plots/Mixed_effects_vs_raw_averages.png", mixed_vs_raw)
 ```
 
 ```{r}
-anova(model, type = 3) #using type 3 as the drop1 output deemed the age_class:nin_type interaction significant
+#| label: ANOVA 
+
+xylem_anova <- anova(model, type = 3) #using type 3 as the drop1 output deemed the age_class:nin_type interaction significant
+xylem_anova
+write.csv(xylem_anova, "Output/Results_anova_mean_area.csv")
+```
+
+```{r}
+#| label: Effect sizes
+
+xylem_anova_pes <- effectsize::eta_squared(xylem_anova, 
+                                           alternative="two.sided"
+                                           )
+
+xylem_anova_pes
+
+xylem_anova_df <- data.frame(xylem_anova)
+xylem_anova_df <- xylem_anova[!(rownames(xylem_anova) == "(Intercept)"), ]
+
+xylem_anova_df[1:9,"pes_ci95_lo"] <- xylem_anova_pes$CI_low
+xylem_anova_df[1:9,"pes_ci95_hi"] <- xylem_anova_pes$CI_high
+xylem_anova_df[1:9,"pes"] <- xylem_anova_pes$Eta2
+
+xylem_anova_df <- xylem_anova_df %>%
+  dplyr::mutate_if(is.numeric, function(x) round(x, 3))
+
+xylem_anova_df
+
+```
+
+```{r}
+#| label: post hoc age class and nin type
+
+#post hoc for year:age_class:nin_type interaction
+xylem_mean_emm <- emmeans(model, ~ year * nin_type * age_class, 
+                          pbkrtest.limit = 23514
+                          ) 
+
+xylem_mean_emm_original <- regrid(xylem_mean_emm)
+
+xylem_mean_emm_tidy <- data.frame(xylem_mean_emm_original)
+
+xylem_mean_emmeans <- emmeans::emmeans(model, 
+                                       specs = pairwise ~ year:age_class:nin_type,
+                                       pbkrtest.limit = 23514)
+xylem_mean_emmeans_contrasts <- data.frame(xylem_mean_emmeans$contrasts)
+
+xylem_mean_emmeans_contrasts <- calculate_and_merge_effect_sizes(xylem_mean_emmeans, model)
+xylem_mean_emmeans_contrasts <- xylem_mean_emmeans_contrasts %>%
+  mutate_if(is.numeric, function(x) round(x, 2))
+
+xylem_mean_post_hoc <- pairs(xylem_mean_emm, simple = "each")
+
+```
+
+```{r}
+year_sig <- xylem_mean_post_hoc$`simple contrasts for year` |>
+  summary() |>
+  as.data.frame() |>
+  filter(p.value < 0.05)
+
+year_sig
+ 
+
+age_sig <- xylem_mean_post_hoc$`simple contrasts for age_class` %>%
+  summary() %>%
+  as.data.frame() %>%
+  filter(p.value < 0.05)
+
+age_sig
+
+nin_sig <- xylem_mean_post_hoc$`simple contrasts for nin_type` %>%
+  summary() %>%
+  as.data.frame() %>%
+  filter(p.value < 0.05)
+
+nin_sig
+
+```
+
+```{r}
+# Order the dataframes based on dependent variables - Not necessary here, but good practice that helps for factorial designs
+xylem_summary <- xylem_mean_summary[order(xylem_mean_summary$year,
+                                          xylem_mean_summary$age_class,
+                                          xylem_mean_summary$nin_type
+                                          ), ]
+xylem_mean_emm_tidy <- xylem_mean_emm_tidy[order(xylem_mean_emm_tidy$year,
+                                                 xylem_mean_emm_tidy$age_class,
+                                                 xylem_mean_emm_tidy$nin_type
+                                                 ), ]
+
+# merge dataframes
+xylem_mean_summary <- merge_emmeans_summary(summary_data = xylem_mean_summary,
+                                            emmeans_tidy = xylem_mean_emm_tidy)
+# Round numeric values
+xylem_mean_summary <- xylem_mean_summary %>%
+  mutate_if(is.numeric, function(x) round(x, 2))
+
+knitr::kable(xylem_mean_summary)
+
+```
+
+```{r}
+# convert estimated marginal mean contrasts to dataframe
+xylem_mean_contrasts <- contrast(xylem_mean_emm)
+xylem_mean_contrasts <- as.data.frame(xylem_mean_contrasts)
+
+```
+
+## Vizualize the data
+
+```{r}
+#| label: Set canvas
+
+canvas <- ggplot(data = data_model, # specify the dataframe that we want to pull variables from
+                 aes(y = Area, # our dependent/response/outcome variable 
+                     x = age_class,  # our grouping/independent/predictor variable
+                     color = factor(year)
+                 )) +
+  facet_grid(rows = vars(nin_type)) 
+
+canvas
+
+```
+
+```{r}
+canvas <-  canvas +  
+  cowplot::theme_half_open() # nice theme for publication
+
+canvas # display our blank canvas
+
+```
+
+```{r}
+canvas + # this is our previously-defined canvas object, it passes the appropriate variables and theme
+  # This function puts out the dot-whisker for the mean + 95% CI
+  geom_pointrange(data = xylem_mean_summary, # our externally-defined summary dataframe
+                  aes(x = age_class,  # our independent variable
+                      y = mean, # our outcome/dependent variable
+                      ymin = loci,  # lower-bound confidence interval
+                      ymax = upci # upper-bound confidence interval
+                  ))
+
+```
+
+```{r}
+viofade_fact <- ggplot(data = data_model,
+                       aes(y = Area, # our dependent/response/outcome variable 
+                           x = age_class,  # our grouping/independent/predictor variable
+                           fill = year)) +  # our third grouping/independent/interaction variable
+  facet_grid(rows = vars(nin_type)) +
+  ggdist::stat_slab(side = "both",  
+                    aes(fill_ramp = stat(level)),
+                    .width = c(.50, 1),
+                    scale = .4,
+                    position = position_dodge(width = .7)) +
+  scale_fill_manual(values = nova_palette) +
+  # stat_summary(fun.data = "mean_cl_normal", 
+  #              show.legend = F, 
+  #              color = "black", 
+  #              position = position_dodge(width = .7))  + 
+  geom_pointrange(data = xylem_mean_summary,
+                  aes(x = age_class, 
+                      y = emmean, 
+                      ymin = emmean_loci, 
+                      ymax = emmean_upci),
+                  position = position_dodge(.7), show.legend = F) +
+  geom_text(data = xylem_mean_summary, aes(x = age_class, 
+                                           y = emmean, 
+                                           label = round(emmean,1)),
+            color="black", 
+            size = 2.5, 
+            vjust = 5, 
+            position = position_dodge(width = .7)) +
+  # stat_summary(aes(label=round(..y..,0)), 
+  #              fun=mean, geom="text",  
+  #              position = position_dodge(width = .7), 
+  #              size=2.5, 
+  #              vjust = 5) +
+  geom_text(data = xylem_mean_summary, 
+            aes(label = paste("n =", n), 
+                y = xylem_mean_summary[which.min(xylem_mean_summary$min),]$mean -
+                  3*xylem_mean_summary[which.min(xylem_mean_summary$min),]$std_dev), #  dynamically set the location of sample size (3 standard deviations below the mean of the lowest-scoring group)
+            size = 2, 
+            color = "black", 
+            position = position_dodge(width = .7)) +
+  guides(fill_ramp = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.03, 0))) +
+  cowplot::theme_half_open() +  
+  theme(axis.title = element_text(face="bold"), 
+        legend.title = element_text(face="bold")) + 
+  labs(x = "Age_class", 
+       y = "Means xylem area (µm²)", 
+       fill = "Year")
+
+
+viofade_fact
+
+```
+
+```{r}
+year_contrasts <- as.data.frame(
+  xylem_mean_post_hoc$`simple contrasts for year`
+)
+
+brackets <- year_contrasts %>%
+  mutate(
+    
+    # Position of age_class on x
+    x_center = as.numeric(
+      factor(
+        age_class,
+        levels = c("PIO", "BUI", "MAT")
+      )
+    ),
+    xmin = x_center - 0.18,
+    xmax = x_center + 0.18,
+    y.position = case_when(
+      age_class == "PIO" ~ 1000,
+      age_class == "BUI" ~ 1000,
+      age_class == "MAT" ~ 1000
+    ),
+    label = case_when(
+      p.value < 0.001 ~ paste0(
+        "t(", round(df, 1), ") = ",
+        round(t.ratio, 2),
+        ", p < 0.001 ***"
+      ),
+      
+      p.value < 0.01 ~ paste0(
+        "t(", round(df, 1), ") = ",
+        round(t.ratio, 2),
+        ", p = ",
+        format.pval(p.value, digits = 2, eps = 0.001),
+        " **"
+      ),
+      
+      p.value < 0.05 ~ paste0(
+        "t(", round(df, 1), ") = ",
+        round(t.ratio, 2),
+        ", p = ",
+        format.pval(p.value, digits = 2, eps = 0.001),
+        " *"
+      ),
+      
+      TRUE ~ paste0(
+        "t(", round(df, 1), ") = ",
+        round(t.ratio, 2),
+        ", p = ",
+        format.pval(p.value, digits = 2, eps = 0.001)
+      )
+  ))
+
+
+#y_positions <- data_model %>%
+#  group_by(nin_type, age_class) %>%
+#  summarise(
+#    y_max = max(Area, na.rm = TRUE),
+#    .groups = "drop"
+#  ) %>%
+#  mutate(
+#    y.position = y_max * 0.90
+#  )
+
+#brackets <- brackets %>%
+#  left_join(
+#    y_positions,
+#    by = c("nin_type", "age_class")
+#  )
+
+
+viofade_stat_year <- ggplot(data = data_model,
+                       aes(y = Area, # our dependent/response/outcome variable 
+                           x = age_class,  # our grouping/independent/predictor variable
+                           fill = year)) +  # our third grouping/independent/interaction variable
+  facet_grid(rows = vars(nin_type)) +
+  ggdist::stat_slab(side = "both",  
+                    aes(fill_ramp = stat(level)),
+                    .width = c(.50, 1),
+                    scale = .4,
+                    position = position_dodge(width = .7)) +
+  scale_fill_manual(values = nova_palette) +
+  # stat_summary(fun.data = "mean_cl_normal", 
+  #              show.legend = F, 
+  #              color = "black", 
+  #              position = position_dodge(width = .7))  + 
+  geom_pointrange(
+    data = xylem_mean_summary,
+    aes(
+      x = age_class,
+      y = emmean,
+      ymin = emmean_loci,
+      ymax = emmean_upci,
+      group = year
+    ),
+    position = position_dodge(.7),
+    show.legend = FALSE
+  ) +
+  geom_text(data = xylem_mean_summary, 
+            aes(x = age_class, 
+                y = emmean, 
+                label = round(emmean,1),
+                group = year),
+            color="black", 
+            size = 2.5, 
+            vjust = 5, 
+            position = position_dodge(width = .7)) +
+  # stat_summary(aes(label=round(..y..,0)), 
+  #              fun=mean, geom="text",  
+  #              position = position_dodge(width = .7), 
+  #              size=2.5, 
+  #              vjust = 5) +
+  geom_text(data = xylem_mean_summary, 
+            aes(label = paste("n =", n), 
+                y = xylem_mean_summary[
+                  which.min(xylem_mean_summary$min),
+                  ]$mean -
+                  3*xylem_mean_summary[
+                    which.min(xylem_mean_summary$min),
+                    ]$std_dev,
+                group = year
+                ), #  dynamically set the location of sample size (3 standard deviations below the mean of the lowest-scoring group)
+            size = 2, 
+            color = "black", 
+            position = position_dodge(width = .7)) +
+  ggpubr::geom_bracket(
+    data = brackets,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      y.position = y.position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    tip.length = 0.02,
+    label.size = 3
+  ) +
+  guides(fill_ramp = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.03, 0))) +
+  cowplot::theme_half_open() +  
+  theme(axis.title = element_text(face="bold"), 
+        legend.title = element_text(face="bold")) + 
+  labs(x = "Age_class", 
+       y = "Means xylem area (µm²)", 
+       fill = "Year")
+
+
+viofade_stat_year
+ggsave("plots/posthoc_year_contrasts.png", viofade_stat_year)
+```
+
+```{r}
+
+nin_type_contrasts <- as.data.frame(
+  xylem_mean_post_hoc$`simple contrasts for nin_type`
+)
+
+nin_levels <- c("BH", "FH", "TH")
+
+brackets_nin <- nin_type_contrasts %>%
+  tidyr::separate(
+    contrast,
+    into = c("group1", "group2"),
+    sep = " - "
+  ) %>%
+  mutate(
+    group1 = trimws(group1),
+    group2 = trimws(group2),
+    
+    # Position of age_class
+    x_center = as.numeric(
+      factor(
+        age_class,
+        levels = c("PIO", "BUI", "MAT")
+      )
+    ),
+    
+    # Position of each nin_type within the dodged age_class
+    x1 = x_center +
+      (match(group1, nin_levels) - 2) * 0.23,
+    
+    x2 = x_center +
+      (match(group2, nin_levels) - 2) * 0.23,
+    
+    xmin = pmin(x1, x2),
+    xmax = pmax(x1, x2),
+    
+    # Different heights for the three pairwise comparisons
+    y.position = case_when(
+      match(group1, nin_levels) + match(group2, nin_levels) == 3 ~ 1000,
+      match(group1, nin_levels) + match(group2, nin_levels) == 4 ~ 1250,
+      match(group1, nin_levels) + match(group2, nin_levels) == 5 ~ 1500
+    ),
+    
+    label = case_when(
+      p.value < 0.001 ~ "p < 0.001 ***",
+      p.value < 0.01 ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2),
+        " **"
+      ),
+      p.value < 0.05 ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2),
+        " *"
+      ),
+      TRUE ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2)
+      )
+    )
+  )
+
+viofade_stat_nin <- ggplot(data = data_model,
+                       aes(y = Area, # our dependent/response/outcome variable 
+                           x = age_class,  # our grouping/independent/predictor variable
+                           fill = nin_type)) +  # our third grouping/independent/interaction variable
+  facet_grid(rows = vars(year)) +
+  ggdist::stat_slab(side = "both",  
+                    aes(fill_ramp = stat(level)),
+                    .width = c(.50, 1),
+                    scale = .4,
+                    position = position_dodge(width = .7)) +
+  scale_fill_manual(values = nova_palette1) +
+  geom_pointrange(
+    data = xylem_mean_summary,
+    aes(
+      x = age_class,
+      y = emmean,
+      ymin = emmean_loci,
+      ymax = emmean_upci,
+      group = nin_type
+    ),
+    position = position_dodge(.7),
+    show.legend = FALSE
+  ) +
+  geom_text(data = xylem_mean_summary, 
+            aes(x = age_class, 
+                y = emmean, 
+                label = round(emmean,1),
+                group = nin_type),
+            color="black", 
+            size = 2.5, 
+            vjust = 5, 
+            position = position_dodge(width = .7)) +
+  geom_text(data = xylem_mean_summary, 
+            aes(label = paste("n =", n), 
+                y = xylem_mean_summary[
+                  which.min(xylem_mean_summary$min),
+                ]$mean -
+                  3*xylem_mean_summary[
+                    which.min(xylem_mean_summary$min),
+                  ]$std_dev,
+                group = nin_type
+            ), #  dynamically set the location of sample size (3 standard deviations below the mean of the lowest-scoring group)
+            size = 2, 
+            color = "black", 
+            position = position_dodge(width = .7)) +
+  ggpubr::geom_bracket(
+    data = brackets_nin,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      y.position = y.position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    tip.length = 0.02,
+    label.size = 3
+  ) +
+  guides(fill_ramp = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.03, 0))) +
+  cowplot::theme_half_open() +  
+  theme(axis.title = element_text(face="bold"), 
+        legend.title = element_text(face="bold")) + 
+  labs(x = "Age class", 
+       y = "Means xylem area (µm²)", 
+       fill = "Nin type")
+
+
+viofade_stat_nin
+ggsave("plots/posthoc_nin_type_contrasts.png", viofade_stat_nin)
+```
+
+```{r}
+age_class_contrasts <- as.data.frame(
+  xylem_mean_post_hoc$`simple contrasts for age_class`
+)
+
+age_levels <- c("PIO", "BUI", "MAT")
+
+brackets_age <- age_class_contrasts %>%
+  tidyr::separate(
+    contrast,
+    into = c("group1", "group2"),
+    sep = " - "
+  ) %>%
+  mutate(
+    group1 = trimws(group1),
+    group2 = trimws(group2),
+    
+    # Position of age_class
+    x_center = as.numeric(
+      factor(
+        nin_type,
+        levels = c("BH", "FH", "TH")
+      )
+    ),
+    
+    # Position of each nin_type within the dodged age_class
+    x1 = x_center +
+      (match(group1, age_levels) - 2) * 0.23,
+    
+    x2 = x_center +
+      (match(group2, age_levels) - 2) * 0.23,
+    
+    xmin = pmin(x1, x2),
+    xmax = pmax(x1, x2),
+    
+    # Different heights for the three pairwise comparisons
+    y.position = case_when(
+      match(group1, age_levels) + match(group2, age_levels) == 3 ~ 1000,
+      match(group1, age_levels) + match(group2, age_levels) == 4 ~ 1250,
+      match(group1, age_levels) + match(group2, age_levels) == 5 ~ 1500
+    ),
+    
+    label = case_when(
+      p.value < 0.001 ~ "p < 0.001 ***",
+      p.value < 0.01 ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2),
+        " **"
+      ),
+      p.value < 0.05 ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2),
+        " *"
+      ),
+      TRUE ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2)
+      )
+    )
+  )
+
+viofade_stat_age <- ggplot(data = data_model,
+                       aes(y = Area, # our dependent/response/outcome variable 
+                           x = nin_type,  # our grouping/independent/predictor variable
+                           fill = age_class)) +  # our third grouping/independent/interaction variable
+  facet_grid(rows = vars(year)) +
+  ggdist::stat_slab(side = "both",  
+                    aes(fill_ramp = stat(level)),
+                    .width = c(.50, 1),
+                    scale = .4,
+                    position = position_dodge(width = .7)) +
+  scale_fill_manual(values = nova_palette2) +
+  geom_pointrange(
+    data = xylem_mean_summary,
+    aes(
+      x = nin_type,
+      y = emmean,
+      ymin = emmean_loci,
+      ymax = emmean_upci,
+      group = age_class
+    ),
+    position = position_dodge(.7),
+    show.legend = FALSE
+  ) +
+  geom_text(data = xylem_mean_summary, 
+            aes(x = nin_type, 
+                y = emmean, 
+                label = round(emmean,1),
+                group = age_class),
+            color="black", 
+            size = 2.5, 
+            vjust = 5, 
+            position = position_dodge(width = .7)) +
+  geom_text(data = xylem_mean_summary, 
+            aes(label = paste("n =", n), 
+                y = xylem_mean_summary[
+                  which.min(xylem_mean_summary$min),
+                ]$mean -
+                  3*xylem_mean_summary[
+                    which.min(xylem_mean_summary$min),
+                  ]$std_dev,
+                group = age_class
+            ), #  dynamically set the location of sample size (3 standard deviations below the mean of the lowest-scoring group)
+            size = 2, 
+            color = "black", 
+            position = position_dodge(width = .7)) +
+  ggpubr::geom_bracket(
+    data = brackets_age,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      y.position = y.position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    tip.length = 0.02,
+    label.size = 3
+  ) +
+  guides(fill_ramp = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.03, 0))) +
+  cowplot::theme_half_open() +  
+  theme(axis.title = element_text(face="bold"), 
+        legend.title = element_text(face="bold")) + 
+  labs(x = "NIN type", 
+       y = "Means xylem area (µm²)", 
+       fill = "Age class")
+
+
+viofade_stat_age
+ggsave("plots/posthoc_age_class_contrasts.png", viofade_stat_age)
+```
+
+```{r}
+data_variance <- data_model
+data_variance$abs_residuals <- abs(residuals(model))
+
+aggregate(abs_residuals ~ year, data_variance, mean)
+
+```
+
+```{r}
+#| label: effect of damage
+
+damage_data <- variation_data %>%
+  mutate(subset_damage = factor(
+    subset_damage, 
+    levels = c("0", "1", "2", "3")
+  ))
+
+ggplot(damage_data,
+       aes(x = factor(subset_damage),
+           y = subset_means,
+           color = factor(year))) +
+  geom_jitter(position = position_jitterdodge(
+    jitter.width = 0.15,
+    dodge.width = 0.4
+  )) +
+  geom_boxplot(position = position_dodge(0.4),
+               alpha = 0.3,
+               outlier.shape = NA) +
+  labs(
+    x = "Subset damage index",
+    y = "Mean xylem vessel area (µm²)"
+  )
+
+```
+
+## Xylem density
+
+```{r}
+#| label: creating density data
+#| warning: false
+
+#creating a new dataset with the density of xylem, keeping only distinct values of density
+density_data <- data_model |>
+  group_by(year, subset_id) |>
+  summarise(
+    source_file = source_file,
+    year = year,
+    age_class = age_class,
+    nin_type = nin_type,
+    treatment = treatment,
+    plant = plant,
+    subset_total = sum(Area),
+    subset_area = subset_area,
+    circ = mean(circ), #using the mean circularity for the subset, otherwise it will pick the first value
+    subset_damage = subset_damage,
+    double_xylem = double_xylem
+  ) |>
+  mutate(density = subset_total/subset_area) |>
+  mutate(replicate = substr(source_file, 7,7))
+
+
+#keeping only distinct values of density, filtering by subset_id as there is only one density per subset
+density_data <- distinct(density_data, year, subset_id, .keep_all = TRUE)
+```
+
+```{r}
+#| label: density model
+#removing double xylem as they will bias the size estimate. then fitting a model with estimates of xylem vessel density for each treatment combo
+
+data_density_model <- density_data |>
+  filter(double_xylem == 0) # remove double xylem from xylem vessel size estimates
+
+# Apply our custom function to create summary dataframe
+xylem_density_summary <- make_summary(data = data_density_model, 
+                                      dv = density, 
+                                      grouping1 = year, 
+                                      grouping2 = age_class,
+                                      grouping3 = nin_type
+                                      )
+
+# Setting contrasts
+contrasts(data_density_model$age_class) <- contr.sum
+contrasts(data_density_model$nin_type) <- contr.sum
+
+
+density_model <- lmer(density ~ year * age_class * nin_type + 
+                        circ + 
+                        subset_damage + 
+                        (1 | plant), 
+                      data = data_density_model)
+
+summary(density_model)
+
+```
+
+### Diagnostics model
+
+```{r}
+#| fig-height: 10
+
+performance::check_model(density_model)
+
+```
+
+```{r}
+#| label: qqplot density
+
+res_density <- residuals(density_model)
+qqnorm(res_density)
+qqline(res_density)
+```
+
+### Model Predictions
+
+```{r}
+#| label: model prediction
+
+pred_mod_density <- ggpredict(density_model, 
+                              terms = c("year", "age_class", "nin_type")
+                              )
+pred_mod_density_df <- as.data.frame(pred_mod_density)
+
+pred_mod_density_df <- pred_mod_density_df |>
+  mutate(
+    treatment = paste(group, facet, sep = "-"),
+    color_group = paste0("Predicted ", x)
+  )
+
+
+density_data <- density_data |>
+  group_by(year, treatment) |>
+  mutate(means_density_treatment = mean(density),
+         sd_density_treatment = sd(density),
+         n_density_treatment = n(),
+         se_density_treatment = sd_density_treatment / sqrt(n_density_treatment),
+         color_group = paste0("Raw ", year)
+  ) |> #mean area and error per NiN-age combination
+  ungroup() 
+  
+density_data |>
+  distinct(year, treatment, density)
+
+mixed_vs_raw_density <- ggplot() +  
+  geom_point(data = density_data, 
+             aes(x = treatment, 
+                 y = means_density_treatment, 
+                 color = color_group, 
+                 shape = "raw density mean"
+             ), 
+             size = 3, 
+             position = position_dodge(0.2)) + 
+  geom_point(data = pred_mod_density_df, 
+             aes(x = treatment, 
+                 y = predicted, 
+                 color = color_group,
+                 shape = "model prediction"
+             ), 
+             size = 3, 
+             position = position_dodge(0.2)) + 
+  geom_errorbar(data = density_data, 
+                aes(x = treatment, 
+                    ymin = means_density_treatment - se_density_treatment, 
+                    ymax = means_density_treatment + se_density_treatment, 
+                    color = color_group), 
+                width = 0.2, position = position_dodge(0.2)) +
+  geom_errorbar(data = pred_mod_density_df, 
+                aes(x = treatment, 
+                    ymin = predicted-std.error, 
+                    ymax = predicted+std.error, 
+                    color = color_group), 
+                width = 0.2, position = position_dodge(0.2)) + 
+  scale_color_manual(
+    values = c(
+      "Raw 2024"       = "darkblue",
+      "Predicted 2024" = "lightblue",
+      "Raw 2025"       = "darkred",
+      "Predicted 2025" = "lightcoral"
+    )
+  ) +
+  labs(x = "Treatment", 
+       y = "xylem vessel density",
+       color = "Year",
+       shape = "Value") + 
+  scale_shape_manual(
+    values = c(
+      "raw density mean" = 1,
+      "model prediction" = 2
+    )
+  )
+
+mixed_vs_raw_density
+
+ggsave("plots/Mixed_effects_vs_raw_averages_density.png", mixed_vs_raw_density)
+```
+
+```{r}
+#| label: ANOVA 
+
+xylem_density_anova <- anova(density_model, type = 3) #using type 3 as the drop1 output deemed the age_class:nin_type interaction significant
+xylem_density_anova
+
+```
+
+```{r}
+#| label: Effect sizes
+
+xylem_density_anova_pes <- effectsize::eta_squared(xylem_density_anova, 
+                                           alternative="two.sided"
+)
+
+xylem_density_anova_pes
+
+xylem_density_anova_df <- data.frame(xylem_density_anova)
+xylem_density_anova_df <- xylem_anova[
+  !(rownames(xylem_density_anova) == "(Intercept)"),
+  ]
+
+xylem_density_anova_df[1:9,"pes_ci95_hi"] <- xylem_density_anova_pes$CI_high
+xylem_density_anova_df[1:9,"pes"] <- xylem_density_anova_pes$Eta2
+
+xylem_density_anova_df <- xylem_density_anova_df %>%
+  dplyr::mutate_if(is.numeric, function(x) round(x, 3))
+
+xylem_density_anova_df
+
+```
+
+```{r}
+#| label: post hoc age class and nin type
+
+#post hoc for year:age_class:nin_type interaction
+xylem_density_emm <- emmeans(density_model, ~ year * nin_type * age_class, 
+                          pbkrtest.limit = 23514
+) 
+
+xylem_density_emm_tidy <- data.frame(xylem_density_emm)
+
+xylem_density_emmeans <- emmeans::emmeans(density_model, 
+                                       specs = pairwise ~ year:age_class:nin_type,
+                                       pbkrtest.limit = 23514)
+
+xylem_density_emmeans_contrasts <- data.frame(xylem_density_emmeans$contrasts)
+
+xylem_density_emmeans_contrasts <- calculate_and_merge_effect_sizes(xylem_density_emmeans, model)
+xylem_density_emmeans_contrasts <- xylem_density_emmeans_contrasts %>%
+  mutate_if(is.numeric, function(x) round(x, 2))
+
+xylem_density_post_hoc <- pairs(xylem_density_emm, simple = "each")
+
+```
+
+```{r}
+year_density_sig <- xylem_density_post_hoc$`simple contrasts for year` |>
+  summary() |>
+  as.data.frame() |>
+  filter(p.value < 0.05)
+
+year_density_sig
+
+
+age_density_sig <- xylem_density_post_hoc$`simple contrasts for age_class` %>%
+  summary() %>%
+  as.data.frame() %>%
+  filter(p.value < 0.05)
+
+age_density_sig
+
+nin_density_sig <- xylem_density_post_hoc$`simple contrasts for nin_type` %>%
+  summary() %>%
+  as.data.frame() %>%
+  filter(p.value < 0.05)
+
+nin_density_sig
+```
+
+```{r}
+# Order the dataframes based on dependent variables - Not necessary here, but good practice that helps for factorial designs
+xylem_density_summary <- xylem_density_summary[
+  order(xylem_density_summary$year,
+        xylem_density_summary$age_class,
+        xylem_density_summary$nin_type
+        ), 
+  ]
+
+xylem_density_emm_tidy <- xylem_density_emm_tidy[
+  order(xylem_density_emm_tidy$year,
+        xylem_density_emm_tidy$age_class, 
+        xylem_density_emm_tidy$nin_type
+        ), 
+  ]
+
+# merge dataframes
+xylem_density_summary <- merge_emmeans_summary1(
+  summary_data = xylem_density_summary,
+  emmeans_tidy = xylem_density_emm_tidy
+  )
+
+# Round numeric values
+xylem_density_summary <- xylem_density_summary %>%
+  mutate_if(is.numeric, function(x) round(x, 2))
+
+```
+
+```{r}
+year_density_contrasts <- as.data.frame(
+  xylem_density_post_hoc$`simple contrasts for year`
+)
+
+brackets_year_density <- year_density_contrasts %>%
+  mutate(
+    
+    # Position of age_class on x
+    x_center = as.numeric(
+      factor(
+        age_class,
+        levels = c("PIO", "BUI", "MAT")
+      )
+    ),
+    xmin = x_center - 0.18,
+    xmax = x_center + 0.18,
+    y.position = case_when(
+      age_class == "PIO" ~ 0.2,
+      age_class == "BUI" ~ 0.2,
+      age_class == "MAT" ~ 0.2
+    ),
+    label = case_when(
+      p.value < 0.001 ~ paste0("p <  0.001", " ***"),
+      p.value < 0.01  ~ paste0("p = ", 
+                               format.pval(p.value, digits = 2), 
+                               " **"),
+      p.value < 0.05  ~ paste0("p = ", 
+                               format.pval(p.value, digits = 2), 
+                               " *"),
+      TRUE            ~ paste0("p = ", 
+                               format.pval(p.value, digits = 2))
+    )
+  )
+
+viofade_stat_density_year <- ggplot(data = data_density_model,
+                       aes(y = density, # our dependent/response/outcome variable 
+                           x = age_class,  # our grouping/independent/predictor variable
+                           fill = year)) +  # our third grouping/independent/interaction variable
+  facet_grid(rows = vars(nin_type)) +
+  ggdist::stat_slab(side = "both",  
+                    aes(fill_ramp = stat(level)),
+                    .width = c(.50, 1),
+                    scale = .4,
+                    position = position_dodge(width = .7)) +
+  scale_fill_manual(values = nova_palette) +
+  geom_pointrange(
+    data = xylem_density_summary,
+    aes(
+      x = age_class,
+      y = emmean,
+      ymin = emmean_loci,
+      ymax = emmean_upci,
+      group = year
+    ),
+    position = position_dodge(.7),
+    show.legend = FALSE
+  ) +
+  geom_text(data = xylem_density_summary, 
+            aes(x = age_class, 
+                y = emmean, 
+                label = round(emmean,1),
+                group = year),
+            color="black", 
+            size = 2.5, 
+            vjust = 5, 
+            position = position_dodge(width = .7)) +
+  geom_text(data = xylem_density_summary, 
+            aes(label = paste("n =", n), 
+                y = xylem_density_summary[
+                  which.min(xylem_density_summary$min),
+                ]$mean -
+                  3*xylem_density_summary[
+                    which.min(xylem_density_summary$min),
+                  ]$std_dev,
+                group = year
+            ), #  dynamically set the location of sample size (3 standard deviations below the mean of the lowest-scoring group)
+            size = 2, 
+            color = "black", 
+            position = position_dodge(width = .7)) +
+  ggpubr::geom_bracket(
+    data = brackets_year_density,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      y.position = y.position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    tip.length = 0.02,
+    label.size = 3
+  ) +
+  guides(fill_ramp = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.03, 0))) +
+  cowplot::theme_half_open() +  
+  theme(axis.title = element_text(face="bold"), 
+        legend.title = element_text(face="bold")) + 
+  labs(x = "Age_class", 
+       y = "Means xylem density", 
+       fill = "Year")
+
+
+viofade_stat_density_year
+```
+
+```{r}
+nin_type_density_contrasts <- as.data.frame(
+  xylem_density_post_hoc$`simple contrasts for nin_type`
+)
+
+nin_levels <- c("BH", "FH", "TH")
+
+brackets_nin_density <- nin_type_density_contrasts %>%
+  tidyr::separate(
+    contrast,
+    into = c("group1", "group2"),
+    sep = " - "
+  ) %>%
+  mutate(
+    group1 = trimws(group1),
+    group2 = trimws(group2),
+    
+    # Position of age_class
+    x_center = as.numeric(
+      factor(
+        age_class,
+        levels = c("PIO", "BUI", "MAT")
+      )
+    ),
+    
+    # Position of each nin_type within the dodged age_class
+    x1 = x_center +
+      (match(group1, nin_levels) - 2) * 0.23,
+    
+    x2 = x_center +
+      (match(group2, nin_levels) - 2) * 0.23,
+    
+    xmin = pmin(x1, x2),
+    xmax = pmax(x1, x2),
+    
+    # Different heights for the three pairwise comparisons
+    y.position = case_when(
+      match(group1, nin_levels) + match(group2, nin_levels) == 3 ~ 0.2,
+      match(group1, nin_levels) + match(group2, nin_levels) == 4 ~ 0.22,
+      match(group1, nin_levels) + match(group2, nin_levels) == 5 ~ 0.24
+    ),
+    
+    label = case_when(
+      p.value < 0.001 ~ "p < 0.001 ***",
+      p.value < 0.01 ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2),
+        " **"
+      ),
+      p.value < 0.05 ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2),
+        " *"
+      ),
+      TRUE ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2)
+      )
+    )
+  )
+
+viofade_stat_nin_density <- ggplot(data = data_density_model,
+                           aes(y = density, # our dependent/response/outcome variable 
+                               x = age_class,  # our grouping/independent/predictor variable
+                               fill = nin_type)) +  # our third grouping/independent/interaction variable
+  facet_grid(rows = vars(year)) +
+  ggdist::stat_slab(side = "both",  
+                    aes(fill_ramp = stat(level)),
+                    .width = c(.50, 1),
+                    scale = .4,
+                    position = position_dodge(width = .7)) +
+  scale_fill_manual(values = nova_palette1) +
+  geom_pointrange(
+    data = xylem_density_summary,
+    aes(
+      x = age_class,
+      y = emmean,
+      ymin = emmean_loci,
+      ymax = emmean_upci,
+      group = nin_type
+    ),
+    position = position_dodge(.7),
+    show.legend = FALSE
+  ) +
+  geom_text(data = xylem_density_summary, 
+            aes(x = age_class, 
+                y = emmean, 
+                label = round(emmean,1),
+                group = nin_type),
+            color="black", 
+            size = 2.5, 
+            vjust = 5, 
+            position = position_dodge(width = .7)) +
+  geom_text(data = xylem_density_summary, 
+            aes(label = paste("n =", n), 
+                y = xylem_density_summary[
+                  which.min(xylem_density_summary$min),
+                ]$mean -
+                  3*xylem_density_summary[
+                    which.min(xylem_density_summary$min),
+                  ]$std_dev,
+                group = nin_type
+            ), #  dynamically set the location of sample size (3 standard deviations below the mean of the lowest-scoring group)
+            size = 2, 
+            color = "black", 
+            position = position_dodge(width = .7)) +
+  ggpubr::geom_bracket(
+    data = brackets_nin_density,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      y.position = y.position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    tip.length = 0.02,
+    label.size = 3
+  ) +
+  guides(fill_ramp = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.03, 0))) +
+  cowplot::theme_half_open() +  
+  theme(axis.title = element_text(face="bold"), 
+        legend.title = element_text(face="bold")) + 
+  labs(x = "Age class", 
+       y = "Means xylem density", 
+       fill = "Nin type")
+
+
+viofade_stat_nin_density
+```
+
+```{r}
+age_class_density_contrasts <- as.data.frame(
+  xylem_density_post_hoc$`simple contrasts for age_class`
+)
+
+age_levels <- c("PIO", "BUI", "MAT")
+
+brackets_age_density <- age_class_density_contrasts %>%
+  tidyr::separate(
+    contrast,
+    into = c("group1", "group2"),
+    sep = " - "
+  ) %>%
+  mutate(
+    group1 = trimws(group1),
+    group2 = trimws(group2),
+    
+    # Position of age_class
+    x_center = as.numeric(
+      factor(
+        nin_type,
+        levels = c("BH", "FH", "TH")
+      )
+    ),
+    
+    # Position of each nin_type within the dodged age_class
+    x1 = x_center +
+      (match(group1, age_levels) - 2) * 0.23,
+    
+    x2 = x_center +
+      (match(group2, age_levels) - 2) * 0.23,
+    
+    xmin = pmin(x1, x2),
+    xmax = pmax(x1, x2),
+    
+    # Different heights for the three pairwise comparisons
+    y.position = case_when(
+      match(group1, age_levels) + match(group2, age_levels) == 3 ~ 0.2,
+      match(group1, age_levels) + match(group2, age_levels) == 4 ~ 0.22,
+      match(group1, age_levels) + match(group2, age_levels) == 5 ~ 0.24
+    ),
+    
+    label = case_when(
+      p.value < 0.001 ~ "p < 0.001 ***",
+      p.value < 0.01 ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2),
+        " **"
+      ),
+      p.value < 0.05 ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2),
+        " *"
+      ),
+      TRUE ~ paste0(
+        "p = ",
+        format.pval(p.value, digits = 2)
+      )
+    )
+  )
+
+viofade_stat_age_density <- ggplot(data = data_density_model,
+                           aes(y = density, # our dependent/response/outcome variable 
+                               x = nin_type,  # our grouping/independent/predictor variable
+                               fill = age_class)) +  # our third grouping/independent/interaction variable
+  facet_grid(rows = vars(year)) +
+  ggdist::stat_slab(side = "both",  
+                    aes(fill_ramp = stat(level)),
+                    .width = c(.50, 1),
+                    scale = .4,
+                    position = position_dodge(width = .7)) +
+  scale_fill_manual(values = nova_palette2) +
+  geom_pointrange(
+    data = xylem_density_summary,
+    aes(
+      x = nin_type,
+      y = emmean,
+      ymin = emmean_loci,
+      ymax = emmean_upci,
+      group = age_class
+    ),
+    position = position_dodge(.7),
+    show.legend = FALSE
+  ) +
+  geom_text(data = xylem_density_summary, 
+            aes(x = nin_type, 
+                y = emmean, 
+                label = round(emmean,1),
+                group = age_class),
+            color="black", 
+            size = 2.5, 
+            vjust = 5, 
+            position = position_dodge(width = .7)) +
+  geom_text(data = xylem_density_summary, 
+            aes(label = paste("n =", n), 
+                y = xylem_density_summary[
+                  which.min(xylem_density_summary$min),
+                ]$mean -
+                  3*xylem_density_summary[
+                    which.min(xylem_density_summary$min),
+                  ]$std_dev,
+                group = age_class
+            ), #  dynamically set the location of sample size (3 standard deviations below the mean of the lowest-scoring group)
+            size = 2, 
+            color = "black", 
+            position = position_dodge(width = .7)) +
+  ggpubr::geom_bracket(
+    data = brackets_age_density,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      y.position = y.position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    tip.length = 0.02,
+    label.size = 3
+  ) +
+  guides(fill_ramp = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0.03, 0))) +
+  cowplot::theme_half_open() +  
+  theme(axis.title = element_text(face="bold"), 
+        legend.title = element_text(face="bold")) + 
+  labs(x = "NIN type", 
+       y = "Means xylem density", 
+       fill = "Age class")
+
+
+viofade_stat_age_density
+```
+
+### Density to area scatterplot
+
+```{r}
+density_area_data <- data %>%
+  group_by(subset_id) |>
+  summarise(
+    source_file = source_file,
+    treatment = treatment,
+    plant = plant,
+    subset_total = sum(Area),
+    subset_means = subset_means,
+    subset_area = subset_area,
+    circ = mean(circ), #using the mean circularity for the subset, otherwise it will pick the first value
+    subset_damage = subset_damage
+  ) |>
+  mutate(density = subset_total/subset_area) |>
+  mutate(replicate = substr(source_file, 7,7))
+
+density_area_data <- density_area_data |>
+  group_by(plant) |>
+  summarise(plant_mean = mean(subset_means),
+            plant_density = mean(density),
+            plant = plant,
+            treatment = treatment
+  )
+
+density_area_data$treatment <- factor(
+  density_area_data$treatment, 
+  levels = c("PIO-BH", "PIO-FH", "PIO-TH", 
+             "BUI-BH", "BUI-FH", "BUI-TH", 
+             "MAT-BH", "MAT-FH", "MAT-TH"
+             ))
+
+density_area_plot <- ggplot(data = density_area_data, 
+                            aes(x = plant_density, 
+                                y = plant_mean, 
+                                color = treatment)) + 
+  geom_point(size = 1) + 
+  stat_ellipse() + 
+  scale_color_manual(values = c("darkgreen","green3", "lightgreen", 
+                                "darkblue", "royalblue", "skyblue", 
+                                "darkred", "red2", "indianred1"
+                                )) + 
+  labs(x = "Mean density", 
+       y = "Mean xylem vessel area") + 
+  guides(color = guide_legend("NiN-age \ncombination"))
+
+density_area_plot
+ggsave("plots/density_area_plot.png", density_area_plot)
 ```
